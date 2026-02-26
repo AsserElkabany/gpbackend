@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const { addScanner, getScanners } = require('../controller/scannerController');
+const scannerController = require('../controller/scannerController');
 
-// Add new scanner data
-router.post('/scanner', addScanner);
+// Add new scanner data (multiple networks)
+router.post('/scanner', scannerController.addScanners);
 
 // Get all scanner data
-router.get('/scanner', getScanners);
+router.get('/scanner', scannerController.getScanners);
 
 module.exports = router;
