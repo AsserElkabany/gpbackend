@@ -4,7 +4,7 @@ const cookieParser = require("cookie-parser");
 const cors = require("cors");
 
 const user_router = require("./routes/user");
-const scanner_router = require("./routes/scanner");
+const rasberrypi_router = require("./routes/rasberrypi");
 
 const app = express();
 const PORT = 3000;
@@ -20,7 +20,7 @@ app.use(express.json());
 
 // ===== Routes =====
 app.use("/api", user_router);
-app.use("/api", scanner_router);
+app.use("/api", rasberrypi_router);
 
 // ===== MongoDB Connection =====
 const MONGO_URI = "mongodb+srv://asser337:nodejs_11.11@cluster0.ceji32w.mongodb.net/pentest?retryWrites=true&w=majority&appName=Cluster0";

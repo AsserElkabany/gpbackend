@@ -21,11 +21,11 @@ exports.signinUser = async (req, res) => {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
-        // Optional: update last login (if you want)
+       
         user.lastLogin = new Date();
         await user.save();
 
-        // Return user info (without token or role)
+        
         res.json({
             message: "Login successful",
             user: {
