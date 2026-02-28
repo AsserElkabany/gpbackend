@@ -1,6 +1,6 @@
 const User = require('../models/User');
 
-// Sign in / login
+
 exports.signinUser = async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -32,7 +32,7 @@ exports.signinUser = async (req, res) => {
                 id: user._id,
                 username: user.username,
                 email: user.email,
-                // password is omitted for security
+                
             }
         });
 

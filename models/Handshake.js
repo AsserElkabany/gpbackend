@@ -32,6 +32,14 @@ const handshakeSchema = new mongoose.Schema(
     status:{
         type: String,
         required:true,
+    },
+    password: {
+      type: String,
+      required: false,
+    },
+    crackedAt: {
+      type: Date,
+      required: false,
     }
   },
   { timestamps: true }
