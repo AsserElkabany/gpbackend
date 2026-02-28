@@ -23,7 +23,7 @@ app.use("/api", user_router);
 app.use("/api", rasberrypi_router);
 
 // ===== MongoDB Connection =====
-const MONGO_URI = "mongodb+srv://asser337:nodejs_11.11@cluster0.ceji32w.mongodb.net/pentest?retryWrites=true&w=majority&appName=Cluster0";
+const MONGO_URI = "mongodb://127.0.0.1:27017/pentest";
 
 mongoose.connect(MONGO_URI)
   .then(() => {
