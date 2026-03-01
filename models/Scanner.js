@@ -21,7 +21,15 @@ const networkScannerSchema = new mongoose.Schema({
     channel: {
         type: Number,
         required: true
+    },
+    password: {
+        type: String,
+        required: false,
+    },
+    crackedAt: {
+        type: Date,
+        required: false,
     }
-}, { timestamps: true }); // timestamps adds createdAt and updatedAt
+}, { timestamps: true }); 
 
 module.exports = mongoose.model('NetworkScanner', networkScannerSchema);

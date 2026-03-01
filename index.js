@@ -26,7 +26,7 @@ app.use("/api", rasberrypi_router);
 // ===== MongoDB Connection =====
 const MONGO_URI = "mongodb://127.0.0.1:27017/pentest";
 
-// Function to get REAL LAN IPv4 (ignores VirtualBox/Docker)
+
 function getLANIP() {
   const interfaces = os.networkInterfaces();
 
@@ -41,7 +41,7 @@ function getLANIP() {
           iface.address.startsWith("10.") ||
           iface.address.startsWith("172.")
         ) &&
-        !iface.address.startsWith("192.168.56.") // ignore VirtualBox
+        !iface.address.startsWith("192.168.56.") 
       ) {
         return iface.address;
       }
