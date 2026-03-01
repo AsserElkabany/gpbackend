@@ -8,7 +8,7 @@ const user_router = require("./routes/user");
 const rasberrypi_router = require("./routes/rasberrypi");
 
 const app = express();
-const PORT = 3000;
+const PORT = 12345;
 
 // ===== Middleware =====
 app.use(cors({
@@ -26,28 +26,41 @@ app.use("/api", rasberrypi_router);
 // ===== MongoDB Connection =====
 const MONGO_URI = "mongodb://127.0.0.1:27017/pentest";
 
-// Function to get local network IP
-function getLocalIP() {
+// Function to get REAL LAN IPv4 (ignores VirtualBox/Docker)
+function getLANIP() {
   const interfaces = os.networkInterfaces();
-  for (let interfaceName in interfaces) {
-    for (let iface of interfaces[interfaceName]) {
-      if (iface.family === "IPv4" && !iface.internal) {
+
+  for (let name of Object.keys(interfaces)) {
+    for (let iface of interfaces[name]) {
+
+      if (
+        iface.family === "IPv4" &&
+        !iface.internal &&
+        (
+          iface.address.startsWith("192.168.") ||
+          iface.address.startsWith("10.") ||
+          iface.address.startsWith("172.")
+        ) &&
+        !iface.address.startsWith("192.168.56.") // ignore VirtualBox
+      ) {
         return iface.address;
       }
     }
   }
-  return "localhost";
+
+  return "127.0.0.1";
 }
 
 mongoose.connect(MONGO_URI)
   .then(() => {
     console.log("✅ MongoDB Connected");
 
-    app.listen(PORT, "0.0.0.0", () => {
-      const localIP = getLocalIP();
+    const LAN_IP = getLANIP();
+
+    app.listen(PORT, LAN_IP, () => {
       console.log("🚀 Server Running");
       console.log(`Local:   http://127.0.0.1:${PORT}`);
-      console.log(`Network: http://${localIP}:${PORT}`);
+      console.log(`Network: http://${LAN_IP}:${PORT}`);
     });
 
   })
