@@ -6,11 +6,13 @@ const os = require("os");
 
 const user_router = require("./routes/user");
 const rasberrypi_router = require("./routes/rasberrypi");
+const nmap_router = require("./routes/nmap");
 
 const app = express();
-const PORT = 12345;
+const PORT = 30000;
 
 // ===== Middleware =====
+
 app.use(cors({
   origin: true,
   credentials: true
@@ -22,6 +24,7 @@ app.use(express.json());
 // ===== Routes =====
 app.use("/api", user_router);
 app.use("/api", rasberrypi_router);
+app.use("/api", nmap_router);
 
 // ===== MongoDB Connection =====
 const MONGO_URI = "mongodb://127.0.0.1:27017/pentest";
