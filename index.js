@@ -60,7 +60,7 @@ mongoose.connect(MONGO_URI)
 
     const LAN_IP = getLANIP();
 
-    app.listen(PORT, LAN_IP, () => {
+    app.listen(PORT, "0.0.0.0", () => {
       console.log("🚀 Server Running");
       console.log(`Local:   http://127.0.0.1:${PORT}`);
       console.log(`Network: http://${LAN_IP}:${PORT}`);

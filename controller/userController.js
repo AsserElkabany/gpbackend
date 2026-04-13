@@ -37,6 +37,7 @@ exports.signinUser = async (req, res) => {
             jwtkey,
             { expiresIn: "24h" }
         );
+        console.log(token)
 
         // ── Set secure HttpOnly cookie ───────────────────────────────────────
     res.cookie("token", token, {
